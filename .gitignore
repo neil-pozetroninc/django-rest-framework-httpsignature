@@ -3,3 +3,5 @@
 dist/
 build/
 djangorestframework_httpsignature.egg-info/
+.idea/
+
