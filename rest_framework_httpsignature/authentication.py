@@ -1,7 +1,10 @@
+import re
 from rest_framework import authentication
 from rest_framework import exceptions
 from httpsig import HeaderSigner
-import re
+from httpsig.utils import HASHES, CaseInsensitiveDict, generate_message
+from Crypto.Signature import PKCS1_v1_5
+from Crypto.PublicKey import RSA
 
 
 class SignatureAuthentication(authentication.BaseAuthentication):
@@ -11,6 +14,59 @@ class SignatureAuthentication(authentication.BaseAuthentication):
 
     API_KEY_HEADER = 'X-Api-Key'
     ALGORITHM = 'hmac-sha256'
+
+    def __init__(self):
+        self._sign_algorithm, self._hash_algorithm = self.ALGORITHM.split('-')
+        self._hash = HASHES[self._hash_algorithm]
+
+    def _verify_rsa(self, request, headers_dict, api_key, sent_signature):
+
+        headers = CaseInsensitiveDict(headers_dict)
+
+        host = request.META.get(self.header_canonical('Host'))
+        method = request.method
+        path = request.path
+
+        rsa_key = RSA.importKey(api_key)
+        self._rsa = PKCS1_v1_5.new(rsa_key)
+
+        signable = generate_message(headers_dict, headers, host, method, path)
+        mhash = self._hash.new()
+        mhash.update(signable)
+
+        return self._rsa.verify(mhash, sent_signature)
+
+    def _verify_hmac(self, request, sent_signature, api_key, secret):
+        # Build string to sign from "headers" part of Signature value.
+        computed_string = self.build_signature(api_key, secret, request)
+        computed_signature = self.get_signature_from_signature_string(
+            computed_string)
+
+        if computed_signature != sent_signature:
+            raise exceptions.AuthenticationFailed('Bad signature')
+
+    def _verify(self, request, api_key, secret):
+
+        # Check if request has a "Signature" request header.
+        authorization_header = self.header_canonical('Authorization')
+        sent_string = request.META.get(authorization_header)
+        if not sent_string:
+            raise exceptions.AuthenticationFailed('No signature provided')
+
+        sent_signature = self.get_signature_from_signature_string(sent_string)
+
+        signature_headers = self.get_headers_from_signature(sent_signature)
+        headers_dict = self.build_headers_dict(request, signature_headers)
+
+        verified = False
+
+        if self._sign_algorithm == 'rsa':
+            verified = self._verify_rsa(request, headers_dict, api_key, sent_signature)
+        elif self._sign_algorithm == 'hmac':
+            verified = self._verify_hmac(request, sent_signature, api_key, secret)
+        if not verified:
+            raise SystemError('No valid encryptor found.')
+        return verified
 
     def get_signature_from_signature_string(self, signature):
         """Return the signature from the signature header or None."""
@@ -43,7 +99,7 @@ class SignatureAuthentication(authentication.BaseAuthentication):
             return 'CONTENT-LENGTH'
         return 'HTTP_%s' % header_name.replace('-', '_').upper()
 
-    def build_dict_to_sign(self, request, signature_headers):
+    def build_headers_dict(self, request, signature_headers):
         """Build a dict with headers and values used in the signature.
 
         "signature_headers" is a list of lowercase header names.
@@ -61,7 +117,7 @@ class SignatureAuthentication(authentication.BaseAuthentication):
         sent_signature = request.META.get(
             self.header_canonical('Authorization'))
         signature_headers = self.get_headers_from_signature(sent_signature)
-        unsigned = self.build_dict_to_sign(request, signature_headers)
+        unsigned = self.build_headers_dict(request, signature_headers)
 
         # Sign string and compare.
         signer = HeaderSigner(
@@ -81,25 +137,12 @@ class SignatureAuthentication(authentication.BaseAuthentication):
         if not api_key:
             return None
 
-        # Check if request has a "Signature" request header.
-        authorization_header = self.header_canonical('Authorization')
-        sent_string = request.META.get(authorization_header)
-        if not sent_string:
-            raise exceptions.AuthenticationFailed('No signature provided')
-        sent_signature = self.get_signature_from_signature_string(sent_string)
-
         # Fetch credentials for API key from the data store.
         try:
             user, secret = self.fetch_user_data(api_key)
         except TypeError:
             raise exceptions.AuthenticationFailed('Bad API key')
 
-        # Build string to sign from "headers" part of Signature value.
-        computed_string = self.build_signature(api_key, secret, request)
-        computed_signature = self.get_signature_from_signature_string(
-            computed_string)
-
-        if computed_signature != sent_signature:
-            raise exceptions.AuthenticationFailed('Bad signature')
+        self._verify(request, api_key, secret)
 
         return (user, api_key)
