@@ -1,148 +1,108 @@
-import re
 from rest_framework import authentication
 from rest_framework import exceptions
-from httpsig import HeaderSigner
-from httpsig.utils import HASHES, CaseInsensitiveDict, generate_message
-from Crypto.Signature import PKCS1_v1_5
-from Crypto.PublicKey import RSA
+
+from httpsig import HeaderVerifier, utils
+
+"""
+Reusing failure exceptions serves several purposes:
+    1. Lack of useful information regarding the failure inhibits attackers
+    from learning about valid keyIDs or other forms of information leakage.
+    Using the same actual object for any failure makes preventing such
+    leakage through mistakenly-distinct error messages less likely.
+    2. In an API scenario, the object is created once and raised many times
+    rather than generated on every failure, which could lead to higher loads
+    or memory usage in high-volume attack scenarios.
+"""
+FAILED = exceptions.AuthenticationFailed('Invalid signature.')
 
 
 class SignatureAuthentication(authentication.BaseAuthentication):
+    """
+    DRF authentication class for HTTP Signature support.
 
-    SIGNATURE_RE = re.compile('signature="(.+?)"')
-    SIGNATURE_HEADERS_RE = re.compile('headers="([\(\)\sa-z0-9-]+?)"')
+    You must subclass this class in your own project and implement the
+    `fetch_user_data(self, keyId, algorithm)` method, returning a tuple of
+    the User object and a bytes object containing the user's secret. Note
+    that key_id and algorithm are DIRTY as they are supplied by the client
+    and so must be verified in your subclass!
 
-    API_KEY_HEADER = 'X-Api-Key'
-    ALGORITHM = 'hmac-sha256'
+    You may set the following class properties in your subclass to configure
+    authentication for your particular use case:
 
-    def __init__(self):
-        self._sign_algorithm, self._hash_algorithm = self.ALGORITHM.split('-')
-        self._hash = HASHES[self._hash_algorithm]
+    :param www_authenticate_realm:  Default: "api"
+    :param required_headers:        Default: ["(request-target)", "date"]
+    """
 
-    def _verify_rsa(self, request, headers_dict, api_key, sent_signature):
+    www_authenticate_realm = "api"
+    required_headers = ["(request-target)", "date"]
 
-        headers = CaseInsensitiveDict(headers_dict)
+    def fetch_user_data(self, keyId, algorithm=None):
+        """Retuns a tuple (User, secret) or (None, None)."""
+        raise NotImplementedError()
 
-        host = request.META.get(self.header_canonical('Host'))
-        method = request.method
-        path = request.path
-
-        rsa_key = RSA.importKey(api_key)
-        self._rsa = PKCS1_v1_5.new(rsa_key)
-
-        signable = generate_message(headers_dict, headers, host, method, path)
-        mhash = self._hash.new()
-        mhash.update(signable)
-
-        return self._rsa.verify(mhash, sent_signature)
-
-    def _verify_hmac(self, request, sent_signature, api_key, secret):
-        # Build string to sign from "headers" part of Signature value.
-        computed_string = self.build_signature(api_key, secret, request)
-        computed_signature = self.get_signature_from_signature_string(
-            computed_string)
-
-        if computed_signature != sent_signature:
-            raise exceptions.AuthenticationFailed('Bad signature')
-
-    def _verify(self, request, api_key, secret):
-
-        # Check if request has a "Signature" request header.
-        authorization_header = self.header_canonical('Authorization')
-        sent_string = request.META.get(authorization_header)
-        if not sent_string:
-            raise exceptions.AuthenticationFailed('No signature provided')
-
-        sent_signature = self.get_signature_from_signature_string(sent_string)
-
-        signature_headers = self.get_headers_from_signature(sent_signature)
-        headers_dict = self.build_headers_dict(request, signature_headers)
-
-        verified = False
-
-        if self._sign_algorithm == 'rsa':
-            verified = self._verify_rsa(request, headers_dict, api_key, sent_signature)
-        elif self._sign_algorithm == 'hmac':
-            verified = self._verify_hmac(request, sent_signature, api_key, secret)
-        if not verified:
-            raise SystemError('No valid encryptor found.')
-        return verified
-
-    def get_signature_from_signature_string(self, signature):
-        """Return the signature from the signature header or None."""
-        match = self.SIGNATURE_RE.search(signature)
-        if not match:
-            return None
-        return match.group(1)
-
-    def get_headers_from_signature(self, signature):
-        """Returns a list of headers fields to sign.
-
-        According to http://tools.ietf.org/html/draft-cavage-http-signatures-03
-        section 2.1.3, the headers are optional. If not specified, the single
-        value of "Date" must be used.
+    def authenticate_header(self, request):
         """
-        match = self.SIGNATURE_HEADERS_RE.search(signature)
-        if not match:
-            return ['date']
-        headers_string = match.group(1)
-        return headers_string.split()
-
-    def header_canonical(self, header_name):
-        """Translate HTTP headers to Django header names."""
-        # Translate as stated in the docs:
-        # https://docs.djangoproject.com/en/1.6/ref/request-response/#django.http.HttpRequest.META
-        header_name = header_name.lower()
-        if header_name == 'content-type':
-            return 'CONTENT-TYPE'
-        elif header_name == 'content-length':
-            return 'CONTENT-LENGTH'
-        return 'HTTP_%s' % header_name.replace('-', '_').upper()
-
-    def build_headers_dict(self, request, signature_headers):
-        """Build a dict with headers and values used in the signature.
-
-        "signature_headers" is a list of lowercase header names.
+        DRF sends this for unauthenticated responses if we're the primary
+        authenticator.
         """
-        d = {}
-        for header in signature_headers:
-            if header == '(request-target)':
-                continue
-            d[header] = request.META.get(self.header_canonical(header))
-        return d
-
-    def build_signature(self, user_api_key, user_secret, request):
-        """Return the signature for the request."""
-        path = request.get_full_path()
-        sent_signature = request.META.get(
-            self.header_canonical('Authorization'))
-        signature_headers = self.get_headers_from_signature(sent_signature)
-        unsigned = self.build_headers_dict(request, signature_headers)
-
-        # Sign string and compare.
-        signer = HeaderSigner(
-            key_id=user_api_key, secret=user_secret,
-            headers=signature_headers, algorithm=self.ALGORITHM)
-        signed = signer.sign(unsigned, method=request.method, path=path)
-        return signed['authorization']
-
-    def fetch_user_data(self, api_key):
-        """Retuns (User instance, API Secret) or None if api_key is bad."""
-        return None
+        h = " ".join(self.required_headers)
+        return 'Signature realm="%s",headers="%s"' % (self.www_authenticate_realm, h)
 
     def authenticate(self, request):
-        # Check for API key header.
-        api_key_header = self.header_canonical(self.API_KEY_HEADER)
-        api_key = request.META.get(api_key_header)
-        if not api_key:
+        """
+        Perform the actual authentication.
+
+        Note that the exception raised is always the same. This is so that we
+        don't leak information about in/valid keyIds and other such useful
+        things.
+        """
+        auth_header = authentication.get_authorization_header(request)
+        if not auth_header or len(auth_header) == 0:
             return None
 
-        # Fetch credentials for API key from the data store.
-        try:
-            user, secret = self.fetch_user_data(api_key)
-        except TypeError:
-            raise exceptions.AuthenticationFailed('Bad API key')
+        method, fields = utils.parse_authorization_header(auth_header)
 
-        self._verify(request, api_key, secret)
+        # Ignore foreign Authorization headers.
+        if method.lower() != 'signature':
+            return None
 
-        return (user, api_key)
+        # Verify basic header structure.
+        if len(fields) == 0:
+            raise FAILED
+
+        # Ensure all required fields were included.
+        if len(set(("keyid", "algorithm", "signature")) - set(fields.keys())) > 0:
+            raise FAILED
+
+        # Fetch the secret associated with the keyid
+        user, secret = self.fetch_user_data(
+            request.META.get('HTTP_{}'.format(fields['keyid'].upper().replace('-', '_')), None),
+            algorithm=fields["algorithm"]
+        )
+
+        if not (user and secret):
+            raise FAILED
+
+        # Gather all request headers and translate them as stated in the Django docs:
+        # https://docs.djangoproject.com/en/1.6/ref/request-response/#django.http.HttpRequest.META
+        headers = {}
+        for key in request.META.keys():
+            if key.startswith("HTTP_") or \
+                            key in ("CONTENT_TYPE", "CONTENT_LENGTH"):
+                header = key[5:].lower().replace('_', '-')
+                headers[header] = request.META[key]
+
+        # Verify headers
+        hs = HeaderVerifier(
+            headers,
+            secret,
+            required_headers=self.required_headers,
+            method=request.method.lower(),
+            path=request.get_full_path()
+        )
+
+        # All of that just to get to this.
+        if not hs.verify():
+            raise FAILED
+
+        return user, secret
