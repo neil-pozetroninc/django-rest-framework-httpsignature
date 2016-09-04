@@ -1,5 +1,6 @@
 from rest_framework import authentication
 from rest_framework import exceptions
+from django.contrib.auth import get_user_model
 
 from httpsig import HeaderVerifier, utils
 
@@ -14,7 +15,7 @@ Reusing failure exceptions serves several purposes:
     or memory usage in high-volume attack scenarios.
 """
 FAILED = exceptions.AuthenticationFailed('Invalid signature.')
-
+User = get_user_model()
 
 class SignatureAuthentication(authentication.BaseAuthentication):
     """
@@ -76,7 +77,7 @@ class SignatureAuthentication(authentication.BaseAuthentication):
 
         # Fetch the secret associated with the keyid
         user, secret = self.fetch_user_data(
-            request.META.get('HTTP_{}'.format(fields['keyid'].upper().replace('-', '_')), None),
+            fields['keyid'],
             algorithm=fields["algorithm"]
         )
 
