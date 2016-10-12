@@ -57,6 +57,7 @@ class SignatureAuthentication(authentication.BaseAuthentication):
         don't leak information about in/valid keyIds and other such useful
         things.
         """
+
         auth_header = authentication.get_authorization_header(request)
         if not auth_header or len(auth_header) == 0:
             return None
@@ -76,11 +77,14 @@ class SignatureAuthentication(authentication.BaseAuthentication):
             raise FAILED
 
         # Fetch the secret associated with the keyid
-        user, secret = self.fetch_user_data(
-            fields['keyid'],
-            algorithm=fields["algorithm"]
-        )
-
+        try:
+            user, secret = self.fetch_user_data(
+                fields['keyid'],
+                algorithm=fields["algorithm"]
+            )
+        except Exception as ex:
+            print('Received Exception: {}'.format(ex))
+            
         if not (user and secret):
             raise FAILED
 
