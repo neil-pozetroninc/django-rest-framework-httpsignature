@@ -1,7 +1,6 @@
-from django import http
 from django.utils.deprecation import MiddlewareMixin
 from httpsig import utils
-from time import gmtime
+import time
 
 try:
     from urlparse import urlparse
@@ -13,20 +12,6 @@ try:
 except ImportError:
     import hmac
 
-def httpdate(dt):
-    """Return a string representation of a date according to RFC 1123
-    (HTTP/1.1).
-
-    The supplied date must be in UTC.
-
-    """
-    dt_year, dt_month, dt_day, dt_hour, dt_minute, dt_second, dt_weekday, dt_y = dt
-    del(dt)
-    weekday = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][dt_weekday]
-    month = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep",
-             "Oct", "Nov", "Dec"][dt_month - 1]
-    return "%s, %02d %s %04d %02d:%02d:%02d GMT" % (weekday, dt_day, month,
-        dt_year, dt_hour, dt_minute, dt_second)
 
 class HMACMiddleware(MiddlewareMixin):
 
@@ -41,6 +26,7 @@ class HMACMiddleware(MiddlewareMixin):
         Add the headers
         """
         try:
+            response['Timestamp'] = str(int(time.time()))
             hmac_instance = hmac.new(request.auth.encode('utf-8'), digestmod='sha256')
             authenticated = True
         except TypeError:
@@ -53,7 +39,7 @@ class HMACMiddleware(MiddlewareMixin):
             authenticated = False
         finally:
             if authenticated:
-                signable_message = utils.generate_message(['date'], {'date':httpdate(gmtime()[:-1:])})
+                signable_message = utils.generate_message(['timestamp'], {'timestamp': response['Timestamp']})
                 signable_message = signable_message + response.content
                 #print('Signable Message is: {}'.format(signable_message))
                 hmac_instance.update(signable_message)

@@ -31,11 +31,11 @@ class SignatureAuthentication(authentication.BaseAuthentication):
     authentication for your particular use case:
 
     :param www_authenticate_realm:  Default: "api"
-    :param required_headers:        Default: ["(request-target)", "date"]
+    :param required_headers:        Default: ["(request-target)", "timestamp"]
     """
 
     www_authenticate_realm = "api"
-    required_headers = ["(request-target)", "date"]
+    required_headers = ["(request-target)", "timestamp"]
 
     def fetch_user_data(self, keyId, algorithm=None):
         """Retuns a tuple (User, secret) or (None, None)."""
