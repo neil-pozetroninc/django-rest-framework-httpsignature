@@ -13,6 +13,13 @@ except ImportError:
     import hmac
 
 
+# Micropython implementations of time() use different epoch starts:
+# 1970-01-01 on Unix
+# 2001-01-01 on devices
+# We use 2001-01-01 00:00:00 UTC for Timestamp header.
+EPOCH = 978307200
+
+
 class HMACMiddleware(MiddlewareMixin):
 
     #def process_request(self, request):
@@ -26,7 +33,7 @@ class HMACMiddleware(MiddlewareMixin):
         Add the headers
         """
         try:
-            response['Timestamp'] = str(int(time.time()))
+            response['Timestamp'] = str(int(time.time() - EPOCH))
             hmac_instance = hmac.new(request.auth.encode('utf-8'), digestmod='sha256')
             authenticated = True
         except TypeError:
