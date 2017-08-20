@@ -15,9 +15,9 @@ except ImportError:
 
 # Micropython implementations of time() use different epoch starts:
 # 1970-01-01 on Unix
-# 2001-01-01 on devices
-# We use 2001-01-01 00:00:00 UTC for Timestamp header.
-EPOCH = 978307200
+# 2000-01-01 on devices
+# We use 2000-01-01 00:00:00 UTC for Timestamp header.
+EPOCH = 946684800
 
 
 class HMACMiddleware(MiddlewareMixin):
